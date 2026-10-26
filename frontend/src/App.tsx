@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
+import { AppShell, Button, Container, Group, Title } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { api, Category, isReplayActive, PcapRecord, ReplayStatus, Tag } from './api';
-import { Modal } from './components/Modal';
 import { NowPlaying } from './components/NowPlaying';
 import { CategoriesPage } from './pages/CategoriesPage';
 import { PlayerPage } from './pages/PlayerPage';
 import { UploadPage } from './pages/UploadPage';
 
 type Page = 'player' | 'upload' | 'categories';
+
+const PAGES: { page: Page; label: string }[] = [
+  { page: 'player', label: 'Player' },
+  { page: 'upload', label: 'Upload' },
+  { page: 'categories', label: 'Categories & Tags' },
+];
 
 /** Data loaded once here and passed down to every page. */
 export interface AppData {
@@ -16,7 +23,7 @@ export interface AppData {
   replay: ReplayStatus | null;
   /** Loads categories, tags and records again (call after any change). */
   reload: () => Promise<void>;
-  /** Shows the error popup. */
+  /** Shows an error notification. */
   showError: (error: unknown) => void;
   setReplay: (status: ReplayStatus) => void;
 }
@@ -27,13 +34,17 @@ export default function App() {
   const [tags, setTags] = useState<Tag[]>([]);
   const [records, setRecords] = useState<PcapRecord[]>([]);
   const [replay, setReplay] = useState<ReplayStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
   // The now-playing bar can be closed after a replay ends. We remember which status was closed,
   // so the bar shows up again as soon as the status changes (e.g. a new replay starts).
   const [closedBarKey, setClosedBarKey] = useState('');
 
   const showError = useCallback((e: unknown) => {
-    setError(e instanceof Error ? e.message : String(e));
+    notifications.show({
+      color: 'red',
+      title: 'Error',
+      message: e instanceof Error ? e.message : String(e),
+      autoClose: 8000,
+    });
   }, []);
 
   const reload = useCallback(async () => {
@@ -77,31 +88,32 @@ export default function App() {
   const data: AppData = { categories, tags, records, replay, reload, showError, setReplay };
 
   return (
-    <div className="app">
-      <header className="nav">
-        <div className="nav-title">PCAP Player</div>
-        <nav>
-          <button className={page === 'player' ? 'nav-link active' : 'nav-link'} onClick={() => setPage('player')}>Player</button>
-          <button className={page === 'upload' ? 'nav-link active' : 'nav-link'} onClick={() => setPage('upload')}>Upload</button>
-          <button className={page === 'categories' ? 'nav-link active' : 'nav-link'} onClick={() => setPage('categories')}>Categories &amp; Tags</button>
-        </nav>
-      </header>
+    <AppShell header={{ height: 56 }} padding="md">
+      <AppShell.Header>
+        <Group h="100%" px="md" gap="lg">
+          <Title order={4}>PCAP Player</Title>
+          <Group gap={4}>
+            {PAGES.map((p) => (
+              <Button key={p.page} variant={page === p.page ? 'light' : 'subtle'}
+                color={page === p.page ? undefined : 'gray'} onClick={() => setPage(p.page)}>
+                {p.label}
+              </Button>
+            ))}
+          </Group>
+        </Group>
+      </AppShell.Header>
 
-      <main className="content">
-        {showBar && replay && (
-          <NowPlaying status={replay} onStop={stopReplay} onClose={() => setClosedBarKey(barKey)} />
-        )}
+      <AppShell.Main>
+        <Container size="lg" px={0}>
+          {showBar && replay && (
+            <NowPlaying status={replay} onStop={stopReplay} onClose={() => setClosedBarKey(barKey)} />
+          )}
 
-        {page === 'player' && <PlayerPage data={data} />}
-        {page === 'upload' && <UploadPage data={data} onSaved={() => setPage('player')} onGoToCategories={() => setPage('categories')} />}
-        {page === 'categories' && <CategoriesPage data={data} />}
-      </main>
-
-      {error && (
-        <Modal title="Error" onClose={() => setError(null)} footer={<button onClick={() => setError(null)}>OK</button>}>
-          <p className="error-text">{error}</p>
-        </Modal>
-      )}
-    </div>
+          {page === 'player' && <PlayerPage data={data} />}
+          {page === 'upload' && <UploadPage data={data} onSaved={() => setPage('player')} onGoToCategories={() => setPage('categories')} />}
+          {page === 'categories' && <CategoriesPage data={data} />}
+        </Container>
+      </AppShell.Main>
+    </AppShell>
   );
 }

@@ -7,6 +7,8 @@ export default defineConfig({
     // The backend serves these files from its jar (classpath folder "webroot").
     outDir: '../backend/src/main/resources/webroot',
     emptyOutDir: true,
+    // One bundle (React + Mantine, ~150 KB gzipped) is fine for this internal tool.
+    chunkSizeWarningLimit: 1000,
   },
   server: {
     // During development (npm run dev) send API calls to the backend.

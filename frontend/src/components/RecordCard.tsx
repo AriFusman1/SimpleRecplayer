@@ -1,6 +1,7 @@
-import { ReactNode } from 'react';
+import { Badge, Button, Card, Group, SimpleGrid, Text } from '@mantine/core';
 import { api, Category, filtersOnSource, MODE_LABELS, PcapRecord, Tag } from '../api';
 import { formatDuration, formatSize, formatTime } from '../time';
+import { Field, Warnings } from './Field';
 
 interface Props {
   record: PcapRecord;
@@ -18,27 +19,29 @@ export function RecordCard({ record, category, tags, playDisabled, onPlay, onEdi
   const side = category && filtersOnSource(category.mode) ? 'Source' : 'Destination';
 
   return (
-    <div className="card">
-      <div className="card-header">
+    <Card withBorder mb="md">
+      <Group justify="space-between" align="flex-start" mb="md">
         <div>
-          <div className="card-title">{record.name}</div>
-          {record.description && <div className="muted">{record.description}</div>}
+          <Text fw={600}>{record.name}</Text>
+          {record.description && <Text size="sm" c="dimmed">{record.description}</Text>}
         </div>
-        <div className="card-actions">
-          <button className="primary" disabled={playDisabled} onClick={onPlay}
-            title={playDisabled ? 'Another replay is running' : ''}>Play</button>
-          <button onClick={onEdit}>Edit</button>
-          <a className="button" href={api.downloadUrl(record.id)}>Download</a>
-          <button className="danger" onClick={onDelete}>Delete</button>
-        </div>
-      </div>
+        <Group gap="xs">
+          <Button size="xs" disabled={playDisabled} onClick={onPlay}
+            title={playDisabled ? 'Another replay is running' : ''}>Play</Button>
+          <Button size="xs" variant="default" onClick={onEdit}>Edit</Button>
+          <Button size="xs" variant="default" component="a" href={api.downloadUrl(record.id)}>Download</Button>
+          <Button size="xs" color="red" variant="light" onClick={onDelete}>Delete</Button>
+        </Group>
+      </Group>
 
-      <div className="fields">
+      <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="md" verticalSpacing="sm">
         <Field label="Category">
           {category ? `${category.name} (${MODE_LABELS[category.mode]})` : 'Unknown'}
         </Field>
         <Field label="Tags">
-          {recordTags.length === 0 ? '-' : recordTags.map((t) => <span key={t.id} className="tag">{t.name}</span>)}
+          {recordTags.length === 0 ? '-' : (
+            <Group gap={4}>{recordTags.map((t) => <Badge key={t.id} variant="light" size="sm">{t.name}</Badge>)}</Group>
+          )}
         </Field>
         <Field label="Time range">{formatTime(record.startTime)} - {formatTime(record.endTime)}</Field>
         <Field label="Duration">{formatDuration(record.stats.durationMillis)}</Field>
@@ -47,22 +50,9 @@ export function RecordCard({ record, category, tags, playDisabled, onPlay, onEdi
         <Field label={`${side} IP`}>{record.ipFilter ?? 'All IPs'}</Field>
         <Field label="File">{record.fileName} ({formatSize(record.fileSize)})</Field>
         <Field label="Uploaded">{formatTime(record.uploadDate)}</Field>
-      </div>
+      </SimpleGrid>
 
-      {record.stats.warnings.length > 0 && (
-        <ul className="warnings">
-          {record.stats.warnings.map((w) => <li key={w}>{w}</li>)}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="field">
-      <div className="field-label">{label}</div>
-      <div>{children}</div>
-    </div>
+      <Warnings warnings={record.stats.warnings} />
+    </Card>
   );
 }
