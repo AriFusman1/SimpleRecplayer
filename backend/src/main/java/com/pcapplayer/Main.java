@@ -29,7 +29,7 @@ public final class Main {
         MetadataStore store = new MetadataStore(new S3Storage(config));
         store.load();
 
-        Player player = new Player();
+        Player player = new Player(vertx);
         Router router = ApiServer.createRouter(vertx, config, store, player);
 
         vertx.createHttpServer()

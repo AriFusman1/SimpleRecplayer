@@ -17,6 +17,9 @@
     <vertx.version>4.5.10</vertx.version>
     <jackson.version>2.16.1</jackson.version>
     <aws.sdk.version>2.25.60</aws.sdk.version>
+    <pcap4j.version>1.8.2</pcap4j.version>
+    <!-- Pcap4J 1.8.2 brings JNA 5.3.1, which has no native part for ARM64 (Apple Silicon, Graviton). -->
+    <jna.version>5.14.0</jna.version>
 
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
     <maven-shade-plugin.version>3.5.3</maven-shade-plugin.version>
@@ -32,6 +35,24 @@
       <groupId>io.vertx</groupId>
       <artifactId>vertx-web</artifactId>
       <version>${vertx.version}</version>
+    </dependency>
+
+    <!-- Reads pcap files through the native libpcap (JNA). The static packet factory decodes
+         Ethernet / VLAN / Linux SLL / IPv4 / TCP / UDP without any runtime class scanning. -->
+    <dependency>
+      <groupId>org.pcap4j</groupId>
+      <artifactId>pcap4j-core</artifactId>
+      <version>${pcap4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.pcap4j</groupId>
+      <artifactId>pcap4j-packetfactory-static</artifactId>
+      <version>${pcap4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>net.java.dev.jna</groupId>
+      <artifactId>jna</artifactId>
+      <version>${jna.version}</version>
     </dependency>
 
     <!-- Same version for core and databind so they always match. -->

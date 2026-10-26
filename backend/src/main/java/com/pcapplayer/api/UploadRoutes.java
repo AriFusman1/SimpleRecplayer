@@ -3,7 +3,7 @@ package com.pcapplayer.api;
 import com.pcapplayer.Json;
 import com.pcapplayer.pcap.Filter;
 import com.pcapplayer.pcap.ParsedPcap;
-import com.pcapplayer.pcap.PcapParser;
+import com.pcapplayer.pcap.PcapReader;
 import com.pcapplayer.pcap.PcapSummary;
 import com.pcapplayer.storage.Category;
 import com.pcapplayer.storage.MetadataStore;
@@ -75,7 +75,7 @@ final class UploadRoutes {
         ApiServer.blocking(vertx, ctx, () -> {
             ParsedPcap parsed;
             try {
-                parsed = PcapParser.parse(file);
+                parsed = PcapReader.read(file);
             } catch (Exception e) {
                 Files.deleteIfExists(file);
                 throw e;

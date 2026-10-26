@@ -3,7 +3,6 @@ package com.pcapplayer.replay;
 import com.pcapplayer.pcap.Message;
 import com.pcapplayer.pcap.Mode;
 
-import java.io.Closeable;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -13,9 +12,9 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * One replay: what to send, where, and its live progress.
  *
- * The send loop (replay executor thread) writes the progress fields, while Vert.x threads read them
- * for the status endpoint and call stop(). Every changing field is an Atomic*, so all threads
- * always see up-to-date values without any locking.
+ * The replay's own Vert.x context ({@link ReplayVerticle}) writes the progress fields, while the HTTP
+ * event loop reads them for the status endpoint and calls stop(). Every changing field is an Atomic*,
+ * so all threads always see up-to-date values without any locking.
  */
 final class Replay {
 
@@ -33,8 +32,8 @@ final class Replay {
     final AtomicLong endNanos = new AtomicLong();    // 0 until the replay ends
     final AtomicReference<String> error = new AtomicReference<>();
     final AtomicBoolean stopRequested = new AtomicBoolean();
-    /** The socket currently in use, so stop() can close it and wake up a blocked accept()/write(). */
-    final AtomicReference<Closeable> openSocket = new AtomicReference<>();
+    /** Vert.x deployment id of the ReplayVerticle, set once it is deployed, so stop() can undeploy it. */
+    final AtomicReference<String> deploymentId = new AtomicReference<>();
 
     Replay(String recordId, String recordName, Mode mode, String host, int port,
            long rangeStartMillis, List<Message> messages) {
