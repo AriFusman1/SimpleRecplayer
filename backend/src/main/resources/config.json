@@ -1,0 +1,11 @@
+{
+  "httpPort": 8080,
+  "maxUploadMb": 1024,
+  "tempDir": "/tmp/pcap-player",
+  "s3Endpoint": "http://localhost:9000",
+  "s3Region": "us-east-1",
+  "s3Bucket": "pcap-player-simple",
+  "s3AccessKey": "minioadmin",
+  "s3SecretKey": "minioadmin",
+  "s3PathStyle": true
+}
