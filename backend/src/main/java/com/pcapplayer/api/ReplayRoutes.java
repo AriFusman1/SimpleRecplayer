@@ -36,8 +36,8 @@ final class ReplayRoutes {
 
     /**
      * POST /api/replay/start
-     * On a worker thread: download + parse the pcap and build the messages. Then Player.start() hands the
-     * send loop to the replay executor and returns at once, so the HTTP response doesn't wait for the replay.
+     * On a worker thread: download + parse the pcap and build the messages. Then Player.start() deploys the
+     * replay on its own Vert.x context and returns at once, so the HTTP response doesn't wait for the replay.
      */
     void start(RoutingContext ctx) {
         StartRequest req = Json.read(ctx.body().asString(), StartRequest.class);
@@ -62,7 +62,7 @@ final class ReplayRoutes {
         });
     }
 
-    /** POST /api/replay/stop - only sets a flag and closes a socket, so it is safe on the event loop. */
+    /** POST /api/replay/stop - only sets a flag and asks Vert.x to undeploy the replay, so it is safe on the event loop. */
     void stop(RoutingContext ctx) {
         player.stop();
         ApiServer.sendJson(ctx, player.status());
