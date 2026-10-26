@@ -1,7 +1,11 @@
 import { useState } from 'react';
+import { Button, Card, Group, Select, SimpleGrid, Table, Text, TextInput } from '@mantine/core';
 import { api, Category, Mode, MODE_HINTS, MODE_LABELS, Tag } from '../api';
 import { AppData } from '../App';
-import { ConfirmDialog } from '../components/Modal';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+
+const MODE_OPTIONS = (Object.keys(MODE_LABELS) as Mode[]).map((m) => ({ value: m, label: MODE_LABELS[m] }));
+const GLOBAL = 'global'; // Select value for "no category" (Mantine options can't use an empty value)
 
 /** Create, rename and delete categories and tags. */
 export function CategoriesPage({ data }: { data: AppData }) {
@@ -10,7 +14,7 @@ export function CategoriesPage({ data }: { data: AppData }) {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryMode, setNewCategoryMode] = useState<Mode>('TCP_SERVER');
   const [newTagName, setNewTagName] = useState('');
-  const [newTagCategoryId, setNewTagCategoryId] = useState(''); // '' = global
+  const [newTagScope, setNewTagScope] = useState(GLOBAL); // GLOBAL or a category id
 
   // Inline rename: the id being renamed and the text in the box.
   const [renamingId, setRenamingId] = useState('');
@@ -36,7 +40,7 @@ export function CategoriesPage({ data }: { data: AppData }) {
   }
 
   async function addTag() {
-    if (await run(() => api.createTag(newTagName, newTagCategoryId || null))) setNewTagName('');
+    if (await run(() => api.createTag(newTagName, newTagScope === GLOBAL ? null : newTagScope))) setNewTagName('');
   }
 
   function startRename(id: string, name: string) {
@@ -57,90 +61,103 @@ export function CategoriesPage({ data }: { data: AppData }) {
 
   /** The name cell: plain text, or a text box with Save/Cancel while renaming. */
   function nameCell(id: string, name: string, kind: 'category' | 'tag') {
-    if (renamingId !== id) return <td>{name}</td>;
+    if (renamingId !== id) return <Table.Td>{name}</Table.Td>;
     return (
-      <td>
-        <div className="inline-edit">
-          <input value={renameText} autoFocus onChange={(e) => setRenameText(e.target.value)}
+      <Table.Td>
+        <Group gap={4} wrap="nowrap">
+          <TextInput size="xs" value={renameText} autoFocus onChange={(e) => setRenameText(e.currentTarget.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') saveRename(kind); if (e.key === 'Escape') setRenamingId(''); }} />
-          <button className="primary" onClick={() => saveRename(kind)}>Save</button>
-          <button onClick={() => setRenamingId('')}>Cancel</button>
-        </div>
-      </td>
+          <Button size="xs" onClick={() => saveRename(kind)}>Save</Button>
+          <Button size="xs" variant="default" onClick={() => setRenamingId('')}>Cancel</Button>
+        </Group>
+      </Table.Td>
+    );
+  }
+
+  /** Rename / Delete buttons at the end of a row. */
+  function rowActions(onRename: () => void, onDelete: () => void) {
+    return (
+      <Table.Td>
+        <Group gap={4} justify="flex-end" wrap="nowrap">
+          <Button size="xs" variant="default" onClick={onRename}>Rename</Button>
+          <Button size="xs" color="red" variant="light" onClick={onDelete}>Delete</Button>
+        </Group>
+      </Table.Td>
     );
   }
 
   return (
-    <div className="two-columns">
-      <section className="panel">
-        <div className="panel-title">Categories</div>
-        <p className="muted small">The mode describes the original service and cannot be changed later.</p>
-        <table>
-          <thead><tr><th>Name</th><th>Mode</th><th>Records</th><th /></tr></thead>
-          <tbody>
+    <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+      <Card withBorder>
+        <Text fw={600}>Categories</Text>
+        <Text size="sm" c="dimmed" mb="sm">The mode describes the original service and cannot be changed later.</Text>
+        <Table>
+          <Table.Thead>
+            <Table.Tr><Table.Th>Name</Table.Th><Table.Th>Mode</Table.Th><Table.Th>Records</Table.Th><Table.Th /></Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
             {categories.map((c) => (
-              <tr key={c.id}>
+              <Table.Tr key={c.id}>
                 {nameCell(c.id, c.name, 'category')}
-                <td title={MODE_HINTS[c.mode]}>{MODE_LABELS[c.mode]}</td>
-                <td>{recordCount(c.id)}</td>
-                <td className="right">
-                  <button onClick={() => startRename(c.id, c.name)}>Rename</button>
-                  <button className="danger" onClick={() => setDeletingCategory(c)}>Delete</button>
-                </td>
-              </tr>
+                <Table.Td title={MODE_HINTS[c.mode]}>{MODE_LABELS[c.mode]}</Table.Td>
+                <Table.Td>{recordCount(c.id)}</Table.Td>
+                {rowActions(() => startRename(c.id, c.name), () => setDeletingCategory(c))}
+              </Table.Tr>
             ))}
-            {categories.length === 0 && <tr><td colSpan={4} className="muted">No categories yet</td></tr>}
-          </tbody>
-        </table>
-        <div className="add-row">
-          <input placeholder="New category name" value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} />
-          <select value={newCategoryMode} onChange={(e) => setNewCategoryMode(e.target.value as Mode)}>
-            {(Object.keys(MODE_LABELS) as Mode[]).map((m) => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
-          </select>
-          <button className="primary" onClick={addCategory}>Add</button>
-        </div>
-        <p className="muted small">{MODE_HINTS[newCategoryMode]}.</p>
-      </section>
+            {categories.length === 0 && (
+              <Table.Tr><Table.Td colSpan={4}><Text size="sm" c="dimmed">No categories yet</Text></Table.Td></Table.Tr>
+            )}
+          </Table.Tbody>
+        </Table>
+        <Group gap="xs" mt="md" wrap="nowrap">
+          <TextInput style={{ flex: 1 }} placeholder="New category name" value={newCategoryName}
+            onChange={(e) => setNewCategoryName(e.currentTarget.value)} />
+          <Select w={140} allowDeselect={false} data={MODE_OPTIONS} value={newCategoryMode}
+            onChange={(value) => setNewCategoryMode(value as Mode)} />
+          <Button onClick={addCategory}>Add</Button>
+        </Group>
+        <Text size="sm" c="dimmed" mt={4}>{MODE_HINTS[newCategoryMode]}.</Text>
+      </Card>
 
-      <section className="panel">
-        <div className="panel-title">Tags</div>
-        <p className="muted small">Global tags can be used on any record; category tags only on that category's records.</p>
-        <table>
-          <thead><tr><th>Name</th><th>Scope</th><th>Records</th><th /></tr></thead>
-          <tbody>
+      <Card withBorder>
+        <Text fw={600}>Tags</Text>
+        <Text size="sm" c="dimmed" mb="sm">Global tags can be used on any record; category tags only on that category's records.</Text>
+        <Table>
+          <Table.Thead>
+            <Table.Tr><Table.Th>Name</Table.Th><Table.Th>Scope</Table.Th><Table.Th>Records</Table.Th><Table.Th /></Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
             {tags.map((t) => (
-              <tr key={t.id}>
+              <Table.Tr key={t.id}>
                 {nameCell(t.id, t.name, 'tag')}
-                <td>{categoryName(t.categoryId)}</td>
-                <td>{tagUseCount(t.id)}</td>
-                <td className="right">
-                  <button onClick={() => startRename(t.id, t.name)}>Rename</button>
-                  <button className="danger" onClick={() => setDeletingTag(t)}>Delete</button>
-                </td>
-              </tr>
+                <Table.Td>{categoryName(t.categoryId)}</Table.Td>
+                <Table.Td>{tagUseCount(t.id)}</Table.Td>
+                {rowActions(() => startRename(t.id, t.name), () => setDeletingTag(t))}
+              </Table.Tr>
             ))}
-            {tags.length === 0 && <tr><td colSpan={4} className="muted">No tags yet</td></tr>}
-          </tbody>
-        </table>
-        <div className="add-row">
-          <input placeholder="New tag name" value={newTagName} onChange={(e) => setNewTagName(e.target.value)} />
-          <select value={newTagCategoryId} onChange={(e) => setNewTagCategoryId(e.target.value)}>
-            <option value="">Global</option>
-            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <button className="primary" onClick={addTag}>Add</button>
-        </div>
-      </section>
+            {tags.length === 0 && (
+              <Table.Tr><Table.Td colSpan={4}><Text size="sm" c="dimmed">No tags yet</Text></Table.Td></Table.Tr>
+            )}
+          </Table.Tbody>
+        </Table>
+        <Group gap="xs" mt="md" wrap="nowrap">
+          <TextInput style={{ flex: 1 }} placeholder="New tag name" value={newTagName}
+            onChange={(e) => setNewTagName(e.currentTarget.value)} />
+          <Select w={140} allowDeselect={false} value={newTagScope} onChange={(value) => setNewTagScope(value ?? GLOBAL)}
+            data={[{ value: GLOBAL, label: 'Global' }, ...categories.map((c) => ({ value: c.id, label: c.name }))]} />
+          <Button onClick={addTag}>Add</Button>
+        </Group>
+      </Card>
 
       {deletingCategory && (
         <ConfirmDialog
           title="Delete category"
           message={
-            <p>
+            <Text size="sm">
               Delete <b>{deletingCategory.name}</b>? This also deletes its{' '}
               <b>{recordCount(deletingCategory.id)} records</b> with their pcap files, and its{' '}
               {tags.filter((t) => t.categoryId === deletingCategory.id).length} tags. This cannot be undone.
-            </p>
+            </Text>
           }
           confirmLabel="Delete"
           onConfirm={async () => { await run(() => api.deleteCategory(deletingCategory.id)); setDeletingCategory(null); }}
@@ -150,12 +167,12 @@ export function CategoriesPage({ data }: { data: AppData }) {
       {deletingTag && (
         <ConfirmDialog
           title="Delete tag"
-          message={<p>Delete tag <b>{deletingTag.name}</b>? It will be removed from {tagUseCount(deletingTag.id)} records.</p>}
+          message={<Text size="sm">Delete tag <b>{deletingTag.name}</b>? It will be removed from {tagUseCount(deletingTag.id)} records.</Text>}
           confirmLabel="Delete"
           onConfirm={async () => { await run(() => api.deleteTag(deletingTag.id)); setDeletingTag(null); }}
           onCancel={() => setDeletingTag(null)}
         />
       )}
-    </div>
+    </SimpleGrid>
   );
 }

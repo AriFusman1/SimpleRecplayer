@@ -1,7 +1,11 @@
 import { useState } from 'react';
+import { Anchor, Button, Card, Group, MultiSelect, Select, SimpleGrid, Stack, Text, Textarea, TextInput, Title } from '@mantine/core';
+import { DateTimePicker } from '@mantine/dates';
+import { Dropzone } from '@mantine/dropzone';
 import { AnalyzeResult, api, filtersOnSource, MODE_HINTS, MODE_LABELS, protocolOf, ValidateResult } from '../api';
 import { AppData } from '../App';
-import { ceilSecond, floorSecond, formatDuration, formatSize, formatTime, parseTime } from '../time';
+import { Field, Warnings } from '../components/Field';
+import { ceilSecond, DATE_TIME_FORMAT, floorSecond, formatDuration, formatSize, formatTime } from '../time';
 
 interface Props {
   data: AppData;
@@ -11,7 +15,7 @@ interface Props {
 
 /**
  * Upload flow:
- *  1. pick a file -> POST /api/pcap/analyze -> summary
+ *  1. drop / pick a file -> POST /api/pcap/analyze -> summary
  *  2. fill the form
  *  3. "Check" -> POST /api/pcap/validate -> message count, duration, warnings
  *  4. "Save"  -> POST /api/records
@@ -20,16 +24,15 @@ export function UploadPage({ data, onSaved, onGoToCategories }: Props) {
   const { categories, tags, reload, showError } = data;
 
   const [analyzing, setAnalyzing] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
   const [file, setFile] = useState<AnalyzeResult | null>(null);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [categoryId, setCategoryId] = useState('');
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [ports, setPorts] = useState<number[]>([]);
   const [ipFilter, setIpFilter] = useState('');
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
+  const [start, setStart] = useState<Date | null>(null);
+  const [end, setEnd] = useState<Date | null>(null);
   const [tagIds, setTagIds] = useState<string[]>([]);
 
   // Result of "Check". Cleared whenever the form changes, so Save always matches what was checked.
@@ -51,8 +54,8 @@ export function UploadPage({ data, onSaved, onGoToCategories }: Props) {
       setPorts([]);
       setIpFilter('');
       setTagIds([]);
-      setStart(formatTime(floorSecond(result.summary.recordingStart)));
-      setEnd(formatTime(ceilSecond(result.summary.recordingEnd)));
+      setStart(new Date(floorSecond(result.summary.recordingStart)));
+      setEnd(new Date(ceilSecond(result.summary.recordingEnd)));
     } catch (e) {
       showError(e);
     } finally {
@@ -68,19 +71,11 @@ export function UploadPage({ data, onSaved, onGoToCategories }: Props) {
     };
   }
 
-  function onCategoryChange(id: string) {
+  function onCategoryChange(id: string | null) {
     changed(setCategoryId)(id);
     setPorts([]); // the port list depends on the mode
     setIpFilter('');
     setTagIds((ids) => ids.filter((tid) => tags.find((t) => t.id === tid)?.categoryId === null));
-  }
-
-  function togglePort(port: number) {
-    changed(setPorts)(ports.includes(port) ? ports.filter((p) => p !== port) : [...ports, port]);
-  }
-
-  function toggleTag(id: string) {
-    setTagIds(tagIds.includes(id) ? tagIds.filter((t) => t !== id) : [...tagIds, id]);
   }
 
   /** Builds the request body from the form, or shows an error and returns null. */
@@ -94,13 +89,14 @@ export function UploadPage({ data, onSaved, onGoToCategories }: Props) {
       showError('Select at least one port');
       return null;
     }
-    const startTime = parseTime(start);
-    const endTime = parseTime(end);
-    if (startTime === null || endTime === null) {
-      showError('Times must look like DD/MM/YYYY HH:MM:SS');
+    if (!start || !end) {
+      showError('Select a start and an end time');
       return null;
     }
-    return { uploadId: file.uploadId, categoryId: category.id, ports, ipFilter: ipFilter || null, startTime, endTime };
+    return {
+      uploadId: file.uploadId, categoryId: category.id, ports, ipFilter: ipFilter || null,
+      startTime: start.getTime(), endTime: end.getTime(),
+    };
   }
 
   async function runCheck() {
@@ -144,137 +140,106 @@ export function UploadPage({ data, onSaved, onGoToCategories }: Props) {
     : [];
   const ipList = summary ? (onSource ? summary.srcIps : summary.dstIps) : [];
   const availableTags = tags.filter((t) => t.categoryId === null || t.categoryId === categoryId);
+  const side = onSource ? 'Source' : 'Destination';
 
   return (
     <div>
-      <h2>Upload a recording</h2>
+      <Title order={3} mb="md">Upload a recording</Title>
 
-      <div
-        className={`dropzone${dragOver ? ' over' : ''}`}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          if (e.dataTransfer.files.length !== 1) {
-            showError('Drop exactly one .pcap file');
-            return;
-          }
-          analyze(e.dataTransfer.files[0]);
-        }}
+      <Dropzone
+        onDrop={(files) => analyze(files[0])}
+        onReject={() => showError('Drop exactly one .pcap file')}
+        multiple={false}
+        loading={analyzing}
+        mb="md"
       >
-        {analyzing ? 'Analyzing...' : (
-          <>
-            Drag a .pcap file here, or{' '}
-            <label className="link">browse
-              <input type="file" accept=".pcap,.cap" hidden
-                onChange={(e) => { if (e.target.files?.[0]) analyze(e.target.files[0]); e.target.value = ''; }} />
-            </label>
-          </>
-        )}
-      </div>
+        <Stack align="center" gap={4} py="lg" style={{ pointerEvents: 'none' }}>
+          <Text>Drag a .pcap file here, or click to browse</Text>
+          <Text size="sm" c="dimmed">One classic pcap file (not pcapng)</Text>
+        </Stack>
+      </Dropzone>
 
       {file && summary && (
         <>
-          <div className="panel">
-            <div className="panel-title">File</div>
-            <div className="fields">
-              <div className="field"><div className="field-label">Name</div>{file.fileName} ({formatSize(file.fileSize)})</div>
-              <div className="field"><div className="field-label">Recording start</div>{formatTime(summary.recordingStart)}</div>
-              <div className="field"><div className="field-label">Recording end</div>{formatTime(summary.recordingEnd)}</div>
-              <div className="field"><div className="field-label">Packets</div>{summary.totalPackets} total, {summary.usablePackets} with TCP/UDP data</div>
-              <div className="field"><div className="field-label">Protocols</div>{summary.protocols.join(', ') || '-'}</div>
-            </div>
-            {summary.warnings.length > 0 && (
-              <ul className="warnings">{summary.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
-            )}
-          </div>
+          <Card withBorder mb="md">
+            <Text fw={600} mb="sm">File</Text>
+            <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="md" verticalSpacing="sm">
+              <Field label="Name">{file.fileName} ({formatSize(file.fileSize)})</Field>
+              <Field label="Recording start">{formatTime(summary.recordingStart)}</Field>
+              <Field label="Recording end">{formatTime(summary.recordingEnd)}</Field>
+              <Field label="Packets">{summary.totalPackets} total, {summary.usablePackets} with TCP/UDP data</Field>
+              <Field label="Protocols">{summary.protocols.join(', ') || '-'}</Field>
+            </SimpleGrid>
+            <Warnings warnings={summary.warnings} />
+          </Card>
 
-          <div className="panel">
-            <div className="panel-title">Record</div>
+          <Card withBorder mb="md">
+            <Text fw={600} mb="sm">Record</Text>
+            <Stack>
+              <TextInput label="Name" value={name} onChange={(e) => setName(e.currentTarget.value)} />
+              <Textarea label="Description" rows={2} value={description} onChange={(e) => setDescription(e.currentTarget.value)} />
 
-            <label>Name<input value={name} onChange={(e) => setName(e.target.value)} /></label>
-            <label>Description<textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
-
-            <label>Category
-              <select value={categoryId} onChange={(e) => onCategoryChange(e.target.value)}>
-                <option value="">Select a category</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name} ({MODE_LABELS[c.mode]})</option>)}
-              </select>
-            </label>
-            {categories.length === 0 && (
-              <p className="small">No categories yet. <button className="link" onClick={onGoToCategories}>Create one</button> first.</p>
-            )}
-
-            {category && (
-              <>
-                <p className="muted small">{MODE_HINTS[category.mode]}.</p>
-
-                <div className="label">{onSource ? 'Source' : 'Destination'} ports ({protocolOf(category.mode)})</div>
-                {portList.length === 0
-                  ? <p className="error-text small">The file has no {protocolOf(category.mode)} packets with data.</p>
-                  : (
-                    <div className="checklist">
-                      {portList.map((p) => (
-                        <label key={p.port} className="check">
-                          <input type="checkbox" checked={ports.includes(p.port)} onChange={() => togglePort(p.port)} />
-                          {p.port} <span className="muted">({p.packets} packets)</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-
-                <label>{onSource ? 'Source' : 'Destination'} IP
-                  <select value={ipFilter} onChange={(e) => changed(setIpFilter)(e.target.value)}>
-                    <option value="">All IPs</option>
-                    {ipList.map((i) => <option key={i.ip} value={i.ip}>{i.ip} ({i.packets} packets)</option>)}
-                  </select>
-                </label>
-              </>
-            )}
-
-            <div className="row">
-              <label>Start time<input value={start} onChange={(e) => changed(setStart)(e.target.value)} /></label>
-              <label>End time<input value={end} onChange={(e) => changed(setEnd)(e.target.value)} /></label>
-            </div>
-
-            {category && (
-              <>
-                <div className="label">Tags</div>
-                {availableTags.length === 0 ? <p className="muted small">No tags for this category.</p> : (
-                  <div className="checklist">
-                    {availableTags.map((t) => (
-                      <label key={t.id} className="check">
-                        <input type="checkbox" checked={tagIds.includes(t.id)} onChange={() => toggleTag(t.id)} />
-                        {t.name} <span className="muted">{t.categoryId ? '' : '(global)'}</span>
-                      </label>
-                    ))}
-                  </div>
+              <div>
+                <Select label="Category" placeholder="Select a category" value={categoryId} onChange={onCategoryChange}
+                  data={categories.map((c) => ({ value: c.id, label: `${c.name} (${MODE_LABELS[c.mode]})` }))} />
+                {categories.length === 0 && (
+                  <Text size="sm" mt={4}>
+                    No categories yet. <Anchor component="button" size="sm" onClick={onGoToCategories}>Create one</Anchor> first.
+                  </Text>
                 )}
-              </>
-            )}
+                {category && <Text size="sm" c="dimmed" mt={4}>{MODE_HINTS[category.mode]}.</Text>}
+              </div>
 
-            <div className="actions">
-              <button disabled={busy} onClick={runCheck}>Check</button>
-            </div>
-          </div>
+              {category && (
+                <>
+                  {portList.length === 0
+                    ? <Text size="sm" c="red">The file has no {protocolOf(category.mode)} packets with data.</Text>
+                    : (
+                      <MultiSelect label={`${side} ports (${protocolOf(category.mode)})`} placeholder="Select ports"
+                        value={ports.map(String)} onChange={(values) => changed(setPorts)(values.map(Number))}
+                        data={portList.map((p) => ({ value: String(p.port), label: `${p.port} (${p.packets} packets)` }))} />
+                    )}
+
+                  <Select label={`${side} IP`} placeholder="All IPs" clearable value={ipFilter || null}
+                    onChange={(value) => changed(setIpFilter)(value ?? '')}
+                    data={ipList.map((i) => ({ value: i.ip, label: `${i.ip} (${i.packets} packets)` }))} />
+                </>
+              )}
+
+              <SimpleGrid cols={2}>
+                <DateTimePicker label="Start time" value={start} onChange={changed(setStart)} withSeconds valueFormat={DATE_TIME_FORMAT} />
+                <DateTimePicker label="End time" value={end} onChange={changed(setEnd)} withSeconds valueFormat={DATE_TIME_FORMAT} />
+              </SimpleGrid>
+
+              {category && (
+                availableTags.length === 0
+                  ? <Text size="sm" c="dimmed">No tags for this category.</Text>
+                  : (
+                    <MultiSelect label="Tags" placeholder="Select tags" value={tagIds} onChange={setTagIds}
+                      data={availableTags.map((t) => ({ value: t.id, label: t.categoryId ? t.name : `${t.name} (global)` }))} />
+                  )
+              )}
+
+              <Group>
+                <Button variant="default" loading={busy && !check} onClick={runCheck}>Check</Button>
+              </Group>
+            </Stack>
+          </Card>
 
           {check && (
-            <div className="panel">
-              <div className="panel-title">Before saving</div>
-              <div className="fields">
-                <div className="field"><div className="field-label">Messages</div>{check.messageCount}</div>
-                <div className="field"><div className="field-label">Duration</div>{formatDuration(check.durationMillis)}</div>
-                <div className="field"><div className="field-label">Category</div>{check.categoryName} ({MODE_LABELS[check.mode]})</div>
-                <div className="field"><div className="field-label">Protocol</div>{check.protocol}</div>
-              </div>
-              {check.warnings.length > 0 && (
-                <ul className="warnings">{check.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
-              )}
-              <div className="actions">
-                <button className="primary" disabled={busy} onClick={save}>{busy ? 'Saving...' : 'Save record'}</button>
-              </div>
-            </div>
+            <Card withBorder mb="md">
+              <Text fw={600} mb="sm">Before saving</Text>
+              <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="md">
+                <Field label="Messages">{check.messageCount}</Field>
+                <Field label="Duration">{formatDuration(check.durationMillis)}</Field>
+                <Field label="Category">{check.categoryName} ({MODE_LABELS[check.mode]})</Field>
+                <Field label="Protocol">{check.protocol}</Field>
+              </SimpleGrid>
+              <Warnings warnings={check.warnings} />
+              <Group mt="md">
+                <Button loading={busy} onClick={save}>Save record</Button>
+              </Group>
+            </Card>
           )}
         </>
       )}

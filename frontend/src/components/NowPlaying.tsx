@@ -1,3 +1,4 @@
+import { Alert, Badge, Button, Card, Group, Progress, Text } from '@mantine/core';
 import { MODE_LABELS, ReplayStatus } from '../api';
 import { formatDuration, formatTime } from '../time';
 
@@ -14,6 +15,14 @@ const STATE_LABELS: Record<string, string> = {
   FAILED: 'Failed',
 };
 
+const STATE_COLORS: Record<string, string> = {
+  WAITING: 'yellow',
+  PLAYING: 'blue',
+  FINISHED: 'green',
+  STOPPED: 'gray',
+  FAILED: 'red',
+};
+
 /** The bar at the top of every page that shows the current (or just ended) replay. */
 export function NowPlaying({ status, onStop, onClose }: Props) {
   const active = status.state === 'WAITING' || status.state === 'PLAYING';
@@ -22,30 +31,33 @@ export function NowPlaying({ status, onStop, onClose }: Props) {
   const stateText = status.state === 'WAITING'
     ? `Waiting for connection on port ${status.listenPort}`
     : STATE_LABELS[status.state] ?? status.state;
+  const color = STATE_COLORS[status.state] ?? 'gray';
 
   return (
-    <div className={`now-playing state-${status.state.toLowerCase()}`}>
-      <div className="now-playing-top">
-        <div>
-          <span className="now-playing-name">{status.recordName}</span>
-          <span className="muted"> &middot; {status.mode ? MODE_LABELS[status.mode] : ''} &middot; {status.target}</span>
-        </div>
-        <div className="now-playing-state">{stateText}</div>
-        {active
-          ? <button className="danger" onClick={onStop}>Stop</button>
-          : <button onClick={onClose}>Close</button>}
-      </div>
+    <Card withBorder mb="md">
+      <Group justify="space-between" wrap="nowrap">
+        <Text>
+          <Text span fw={600}>{status.recordName}</Text>
+          <Text span c="dimmed"> &middot; {status.mode ? MODE_LABELS[status.mode] : ''} &middot; {status.target}</Text>
+        </Text>
+        <Group gap="sm" wrap="nowrap">
+          <Badge color={color} variant="light">{stateText}</Badge>
+          {active
+            ? <Button size="xs" color="red" variant="light" onClick={onStop}>Stop</Button>
+            : <Button size="xs" variant="default" onClick={onClose}>Close</Button>}
+        </Group>
+      </Group>
 
-      <div className="progress"><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
+      <Progress value={percent} color={color} mt="sm" />
 
-      <div className="now-playing-stats">
-        <span>Elapsed {formatDuration(status.elapsedMillis)}</span>
-        <span>Remaining {formatDuration(status.remainingMillis)}</span>
-        <span>Recording time {status.recordingClock ? formatTime(status.recordingClock) : '-'}</span>
-        <span>Messages {status.sent} / {status.total}</span>
-      </div>
+      <Group gap="xl" mt="xs">
+        <Text size="sm" c="dimmed">Elapsed {formatDuration(status.elapsedMillis)}</Text>
+        <Text size="sm" c="dimmed">Remaining {formatDuration(status.remainingMillis)}</Text>
+        <Text size="sm" c="dimmed">Recording time {status.recordingClock ? formatTime(status.recordingClock) : '-'}</Text>
+        <Text size="sm" c="dimmed">Messages {status.sent} / {status.total}</Text>
+      </Group>
 
-      {status.state === 'FAILED' && <div className="error-text">Error: {status.error}</div>}
-    </div>
+      {status.state === 'FAILED' && <Alert color="red" mt="sm" p="xs">Error: {status.error}</Alert>}
+    </Card>
   );
 }

@@ -1,8 +1,14 @@
 // All times in the UI are shown in Israel time as DD/MM/YYYY HH:MM:SS.
 // The backend always sends and receives epoch milliseconds.
 
+export const ISRAEL_TIMEZONE = 'Asia/Jerusalem';
+
+/** Display format of the Mantine date pickers (dayjs tokens). */
+export const DATE_TIME_FORMAT = 'DD/MM/YYYY HH:mm:ss';
+export const DATE_FORMAT = 'DD/MM/YYYY';
+
 const formatter = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Asia/Jerusalem',
+  timeZone: ISRAEL_TIMEZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -49,9 +55,10 @@ export function parseTime(text: string): number | null {
   return formatTime(guess) === text.trim() ? guess : null;
 }
 
-/** "DD/MM/YYYY" -> epoch millis at the start (00:00:00) or end (23:59:59) of that day. */
-export function parseDate(text: string, endOfDay: boolean): number | null {
-  return parseTime(`${text.trim()} ${endOfDay ? '23:59:59' : '00:00:00'}`);
+/** A day picked in a date picker -> epoch millis at the start (00:00:00) or end (23:59:59) of that day in Israel. */
+export function dayBoundary(day: Date, endOfDay: boolean): number | null {
+  const date = formatTime(day.getTime()).slice(0, 10); // "DD/MM/YYYY" in Israel time
+  return parseTime(`${date} ${endOfDay ? '23:59:59' : '00:00:00'}`);
 }
 
 /** Whole seconds, rounded down / up (the UI only shows seconds). */

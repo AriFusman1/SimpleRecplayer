@@ -8,7 +8,7 @@ service-under-test, **now**, with **the same time gaps** as in the recording.
 - Uses normal TCP/UDP sockets (Vert.x networking): only the application payload (the bytes after the TCP/UDP header) is replayed.
 - Only one replay at a time in the whole system.
 
-Backend: Java 17 + Vert.x 4.5 + Pcap4J 1.8 (libpcap). Frontend: React + TypeScript + Vite. Storage: S3 (AWS or MinIO).
+Backend: Java 17 + Vert.x 4.5 + Pcap4J 1.8 (libpcap). Frontend: React + TypeScript + Vite + Mantine 7 (dark theme). Storage: S3 (AWS or MinIO).
 
 ---
 
@@ -55,12 +55,12 @@ backend/
 
 frontend/
   package.json, vite.config.ts, tsconfig.json, index.html
-  src/main.tsx                              mounts <App/>
-  src/App.tsx                               nav bar, page switching, data loading, status polling, error popup
+  src/main.tsx                              mounts <App/> inside MantineProvider (theme, dark mode), DatesProvider (Israel time), Notifications
+  src/App.tsx                               AppShell + nav, page switching, data loading, status polling, error notifications
   src/api.ts                                TypeScript types + one function per API call
-  src/time.ts                               Israel-time formatting/parsing (DD/MM/YYYY HH:MM:SS)
-  src/styles.css                            the only stylesheet (dark theme)
-  src/components/Modal.tsx                  Modal + ConfirmDialog
+  src/time.ts                               Israel-time helpers (DD/MM/YYYY HH:MM:SS) + the date picker formats
+  src/components/ConfirmDialog.tsx          "Are you sure?" modal
+  src/components/Field.tsx                  Field (label + value) and Warnings (yellow list)
   src/components/NowPlaying.tsx             the now-playing bar
   src/components/RecordCard.tsx             one record on the Player page
   src/components/RecordDialogs.tsx          PlayDialog + EditDialog
@@ -103,13 +103,20 @@ Maven 3.9.x, `maven-compiler-plugin` 3.13.0, `maven-shade-plugin` 3.5.3 (builds 
 ### Frontend
 | Package | Version | Kind |
 |---|---|---|
-| `react`, `react-dom` | 18.3.1 | runtime (the only two) |
+| `react`, `react-dom` | 18.3.1 | runtime |
+| `@mantine/core`, `@mantine/hooks` | 7.17.8 | runtime: all UI components (AppShell, Card, Button, Modal, inputs, Select, MultiSelect, Table, Progress...) |
+| `@mantine/dates` | 7.17.8 | runtime: `DateTimePicker` / `DatePickerInput` |
+| `@mantine/dropzone` | 7.17.8 | runtime: the file drop area on the Upload page |
+| `@mantine/notifications` | 7.17.8 | runtime: error messages |
+| `dayjs` | 1.11.13 | runtime: date library used by `@mantine/dates` (formats, timezone) |
 | `vite` | 5.4.8 | build |
 | `@vitejs/plugin-react` | 4.3.2 | build |
 | `typescript` | 5.5.4 | build |
 | `@types/react` / `@types/react-dom` | 18.3.11 / 18.3.1 | build |
 
-Node.js 20 is used to build.
+Node.js 20 is used to build. Mantine 7.17.8 is the last v7 release (not the newer v8 major). No icon package is used.
+There is no hand-written CSS: the look is Mantine's defaults plus a small theme in `main.tsx` (primary color blue,
+radius `sm`, badges not in capitals) and `defaultColorScheme="dark"`.
 
 ---
 
@@ -216,7 +223,7 @@ OpenShift notes:
 ## 6. API
 
 All errors return `{"error": "message"}` with status 400 (bad input), 404 (not found),
-409 (conflict, e.g. a replay is running), 413 (file too big) or 500. The UI shows the message in a popup.
+409 (conflict, e.g. a replay is running), 413 (file too big) or 500. The UI shows the message in a red notification.
 
 | Method & path | Body | Returns |
 |---|---|---|
@@ -312,9 +319,33 @@ Startup (`Main.main`) runs on the main thread: it loads all metadata from S3 *be
 
 Notation: **file -> function** (input) -> output. *[thread]*.
 
+### 10.0 Frontend: where state lives, who calls which API
+
+- **State**: `App.tsx` holds everything shared — `categories`, `tags`, `records` (loaded by `reload()`), the polled
+  replay status (`replay`), the current page and which ended replay bar was closed. It passes them to the pages as one
+  `AppData` object (`data`). Each page keeps only its own form/dialog state in `useState` (search and filters,
+  which dialog is open, the upload form, the inline rename box). There is no global store.
+- **Times**: inputs keep `Date` objects / epoch millis. `DatesProvider` (in `main.tsx`) has `timezone: 'Asia/Jerusalem'`, so
+  the pickers *show and edit* Israel wall time (format `DD/MM/YYYY HH:mm:ss`) while their values stay real instants;
+  `date.getTime()` goes straight to the API. Read-only times are shown with **time.ts -> `formatTime`**.
+- **Errors**: every API error goes to `showError` -> **App.tsx** -> `notifications.show({ color: 'red' })`.
+
+| Component | Calls (api.ts -> HTTP) |
+|---|---|
+| **App.tsx** | `reload()`: `categories()`, `tags()`, `records()` (GET). Every 1 s: `replayStatus()` (GET `/api/replay/status`). Stop button: `stopReplay()` |
+| **PlayerPage.tsx** | `deleteRecord()` after the `ConfirmDialog`. Filters run in the browser: search text, category and tag `Select`s, From/To `DatePickerInput`s (`DD/MM/YYYY`, turned into the Israel start/end of that day by **time.ts -> `dayBoundary`**) |
+| **RecordCard.tsx** | Download = a link to `downloadUrl(id)` |
+| **RecordDialogs.tsx** | `PlayDialog`: `startReplay()`. `EditDialog`: `updateRecord()` |
+| **UploadPage.tsx** | `analyze()` (Dropzone), `validate()` (Check), `saveRecord()` (Save) |
+| **CategoriesPage.tsx** | `createCategory()`, `renameCategory()`, `deleteCategory()`, `createTag()`, `renameTag()`, `deleteTag()` |
+| **NowPlaying.tsx** | none: shows the `replay` status from App, its Stop button calls App's `stopReplay()` |
+
+After any change a page calls `reload()` so all pages see the new data.
+
 ### 10.1 Upload
 
-1. **UploadPage.tsx -> `onDrop` / file input `onChange`** — the user drops or picks one file -> calls `analyze(file)`. *[browser]*
+1. **UploadPage.tsx -> Mantine `Dropzone`** (`multiple={false}`) — the user drops or clicks to pick one file: `onDrop` -> `analyze(files[0])`;
+   more than one file -> `onReject` -> error notification. *[browser]*
 2. **UploadPage.tsx -> `analyze(picked)`** -> **api.ts -> `api.analyze(file)`** — builds a `FormData` with field `file`,
    `POST /api/pcap/analyze`. *[browser]*
 3. **ApiServer.java -> `uploadBody`** (Vert.x `BodyHandler`) — streams the upload to `TEMP_DIR/uploads/<random>`;
@@ -331,18 +362,18 @@ Notation: **file -> function** (input) -> output. *[thread]*.
      or **`sll2Ipv4Start`** for SLL2 -> IPv4 offset or -1) -> `IpV4Packet.newPacket(raw, offset, ...)`; fragment flag/offset -> count + skip.
      **`toPacket`** -> `Packet` or null (not TCP/UDP or empty payload; payload copied from the raw bytes).
      Returns **`ParsedPcap`** (packets, first/last packet time, total, fragments, truncated). The libpcap handle is closed (try-with-resources).
-     A bad file throws `IllegalArgumentException` -> the temp file is deleted -> HTTP 400 popup.
+     A bad file throws `IllegalArgumentException` -> the temp file is deleted -> HTTP 400 -> error notification.
    - Saves `PendingUpload(file, fileName, size, parsed, createdAt)` in the `pending` `ConcurrentHashMap` under a new `uploadId`.
    - **PcapSummary.java -> `summarize(ParsedPcap)`** -> `Summary` (recording start/end, packet counts, protocols,
      destination/source ports with protocol + count, destination/source IPs with count, warnings).
    - Returns `AnalyzeResponse(uploadId, fileName, fileSize, summary)` -> JSON. *[event loop]*
-7. **UploadPage.tsx** — shows the file panel, fills defaults: name = file name, start = recording start rounded **down**
-   to the second, end = recording end rounded **up** (`time.ts -> floorSecond / ceilSecond / formatTime`).
-8. The user picks a category. **`onCategoryChange`** resets ports/IP and drops tags of other categories.
-   The port list shown = `summary.dstPorts` (TCP/UDP server) or `summary.srcPorts` (TCP client), filtered to the mode's protocol
-   (`api.ts -> filtersOnSource, protocolOf`). Tags shown = global + this category's.
-9. **Check** -> **UploadPage.tsx -> `runCheck()`** -> `formValues()` (parses the times with **time.ts -> `parseTime`**,
-   which converts Israel wall time to epoch millis) -> **`api.validate`** -> `POST /api/pcap/validate`.
+7. **UploadPage.tsx** — shows the file panel (`Card`), fills defaults: name = file name, start = recording start rounded **down**
+   to the second, end = recording end rounded **up** (`time.ts -> floorSecond / ceilSecond`), shown in two `DateTimePicker`s.
+8. The user picks a category (`Select`). **`onCategoryChange`** resets ports/IP and drops tags of other categories.
+   The ports `MultiSelect` lists `summary.dstPorts` (TCP/UDP server) or `summary.srcPorts` (TCP client), filtered to the mode's protocol
+   (`api.ts -> filtersOnSource, protocolOf`). The IP `Select` is empty for "All IPs". The tags `MultiSelect` lists global + this category's tags.
+9. **Check** -> **UploadPage.tsx -> `runCheck()`** -> `formValues()` (category, at least one port, both times set;
+   times = `start.getTime()` / `end.getTime()`) -> **`api.validate`** -> `POST /api/pcap/validate`.
 10. **UploadRoutes.java -> `validate(ctx)`** — `Json.read` the body *[event loop]*, then *[worker]*:
     `pendingUpload(uploadId)` (404 if expired), `store.category(id)`, builds a **`Filter`**, calls
     **PcapSummary.java -> `validate(ParsedPcap, Filter)`**:
@@ -422,8 +453,9 @@ Unsaved uploads are dropped after 1 hour: **UploadRoutes -> `removeOldPendingUpl
 
 ### 10.3 Edit
 
-1. **RecordCard.tsx** Edit -> **RecordDialogs.tsx -> `EditDialog`** — name, description, start, end (text in `DD/MM/YYYY HH:MM:SS`).
-2. **`save()`** -> `parseTime` both times -> **`api.updateRecord`** -> `PUT /api/records/{id}`.
+1. **RecordCard.tsx** Edit -> **RecordDialogs.tsx -> `EditDialog`** (Mantine `Modal`) — name, description, start, end
+   (`DateTimePicker`s with seconds, `DD/MM/YYYY HH:mm:ss`, Israel time).
+2. **`save()`** -> `start.getTime()`, `end.getTime()` -> **`api.updateRecord`** -> `PUT /api/records/{id}`.
 3. **RecordRoutes.java -> `update(ctx)`** *[worker]*: `Validation.recordName(store, name, id)` (unique, except itself).
    If the time range changed: **`loadParsed`** (download + `PcapReader.read`) -> **`PcapSummary.validate`** with the record's filter and the new
    range (time inside the recording, messages > 0) -> new `Stats`. Builds the updated `PcapRecord` ->
@@ -438,7 +470,7 @@ Unsaved uploads are dropped after 1 hour: **UploadRoutes -> `removeOldPendingUpl
 
 ### 10.5 Delete a record
 
-1. **RecordCard.tsx** Delete -> **PlayerPage.tsx** `setDeleting(record)` -> **Modal.tsx -> `ConfirmDialog`**.
+1. **RecordCard.tsx** Delete -> **PlayerPage.tsx** `setDeleting(record)` -> **ConfirmDialog.tsx -> `ConfirmDialog`**.
 2. Confirm -> **`confirmDelete()`** -> **`api.deleteRecord`** -> `DELETE /api/records/{id}`.
 3. **RecordRoutes.java -> `delete(ctx)`** *[worker]* -> **MetadataStore.java -> `deleteRecord(id)`** -> deletes
    `pcaps/{id}.pcap` and `records/{id}.json` in S3, removes it from the map. UI reloads.
@@ -474,7 +506,7 @@ Any exception in a route (thrown on the event loop or passed via `ctx.fail` from
 **ApiServer.java -> `handleFailure`**: `IllegalArgumentException` -> 400, `NoSuchElementException` -> 404,
 `IllegalStateException` -> 409, body too large -> 413, anything else -> 500 (stack trace printed).
 The body is `{"error": "..."}`. In the browser **api.ts -> `request`** throws `Error(message)` and the pages
-call `showError` -> **App.tsx** shows the Error modal.
+call `showError` -> **App.tsx** shows a red error notification (top right, closes after 8 s).
 
 ---
 

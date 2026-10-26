@@ -1,20 +1,22 @@
 import { useState } from 'react';
+import { Card, Group, Select, Text, TextInput } from '@mantine/core';
+import { DatePickerInput } from '@mantine/dates';
 import { api, isReplayActive, PcapRecord } from '../api';
 import { AppData } from '../App';
-import { ConfirmDialog } from '../components/Modal';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { RecordCard } from '../components/RecordCard';
 import { EditDialog, PlayDialog } from '../components/RecordDialogs';
-import { parseDate } from '../time';
+import { DATE_FORMAT, dayBoundary } from '../time';
 
 /** Main page: search and filter the records, then play / edit / download / delete them. */
 export function PlayerPage({ data }: { data: AppData }) {
   const { categories, tags, records, replay, reload, showError, setReplay } = data;
 
   const [search, setSearch] = useState('');
-  const [categoryId, setCategoryId] = useState('');
-  const [tagId, setTagId] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [tagId, setTagId] = useState<string | null>(null);
+  const [fromDate, setFromDate] = useState<Date | null>(null);
+  const [toDate, setToDate] = useState<Date | null>(null);
 
   const [playing, setPlaying] = useState<PcapRecord | null>(null);
   const [editing, setEditing] = useState<PcapRecord | null>(null);
@@ -22,8 +24,8 @@ export function PlayerPage({ data }: { data: AppData }) {
 
   // Filtering is done here in the browser; the list is small enough.
   const text = search.trim().toLowerCase();
-  const from = fromDate.trim() ? parseDate(fromDate, false) : null;
-  const to = toDate.trim() ? parseDate(toDate, true) : null;
+  const from = fromDate ? dayBoundary(fromDate, false) : null;
+  const to = toDate ? dayBoundary(toDate, true) : null;
   const visible = records.filter((r) =>
     (!text || r.name.toLowerCase().includes(text) || r.description.toLowerCase().includes(text)) &&
     (!categoryId || r.categoryId === categoryId) &&
@@ -31,8 +33,6 @@ export function PlayerPage({ data }: { data: AppData }) {
     // date range: keep records whose time range overlaps [from, to]
     (from === null || r.endTime >= from) &&
     (to === null || r.startTime <= to));
-
-  const dateError = (fromDate.trim() && from === null) || (toDate.trim() && to === null);
 
   async function confirmDelete() {
     if (!deleting) return;
@@ -50,23 +50,20 @@ export function PlayerPage({ data }: { data: AppData }) {
 
   return (
     <div>
-      <div className="toolbar">
-        <input className="grow" placeholder="Search name or description" value={search}
-          onChange={(e) => setSearch(e.target.value)} />
-        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-          <option value="">All categories</option>
-          {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select value={tagId} onChange={(e) => setTagId(e.target.value)}>
-          <option value="">All tags</option>
-          {tags.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-        </select>
-        <input className="date" placeholder="From DD/MM/YYYY" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-        <input className="date" placeholder="To DD/MM/YYYY" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-      </div>
-      {dateError && <p className="error-text small">Dates must look like DD/MM/YYYY</p>}
+      <Group gap="sm" mb="xs" align="flex-end">
+        <TextInput style={{ flex: 1, minWidth: 200 }} placeholder="Search name or description" value={search}
+          onChange={(e) => setSearch(e.currentTarget.value)} />
+        <Select w={180} placeholder="All categories" clearable value={categoryId} onChange={setCategoryId}
+          data={categories.map((c) => ({ value: c.id, label: c.name }))} />
+        <Select w={160} placeholder="All tags" clearable value={tagId} onChange={setTagId}
+          data={tags.map((t) => ({ value: t.id, label: t.name }))} />
+        <DatePickerInput w={170} placeholder="From DD/MM/YYYY" clearable value={fromDate} onChange={setFromDate}
+          valueFormat={DATE_FORMAT} />
+        <DatePickerInput w={170} placeholder="To DD/MM/YYYY" clearable value={toDate} onChange={setToDate}
+          valueFormat={DATE_FORMAT} />
+      </Group>
 
-      <p className="muted small">{visible.length} of {records.length} records</p>
+      <Text size="sm" c="dimmed" mb="sm">{visible.length} of {records.length} records</Text>
 
       {visible.map((r) => (
         <RecordCard
@@ -80,7 +77,11 @@ export function PlayerPage({ data }: { data: AppData }) {
           onDelete={() => setDeleting(r)}
         />
       ))}
-      {records.length === 0 && <div className="empty">No records yet. Use the Upload page to add one.</div>}
+      {records.length === 0 && (
+        <Card withBorder py="xl">
+          <Text ta="center" c="dimmed">No records yet. Use the Upload page to add one.</Text>
+        </Card>
+      )}
 
       {playing && playingCategory && (
         <PlayDialog record={playing} category={playingCategory} onStarted={setReplay}
@@ -92,7 +93,7 @@ export function PlayerPage({ data }: { data: AppData }) {
       {deleting && (
         <ConfirmDialog
           title="Delete record"
-          message={<p>Delete <b>{deleting.name}</b> and its pcap file? This cannot be undone.</p>}
+          message={<Text size="sm">Delete <b>{deleting.name}</b> and its pcap file? This cannot be undone.</Text>}
           confirmLabel="Delete"
           onConfirm={confirmDelete}
           onCancel={() => setDeleting(null)}
