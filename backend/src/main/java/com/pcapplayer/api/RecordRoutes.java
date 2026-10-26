@@ -4,7 +4,7 @@ import com.pcapplayer.Config;
 import com.pcapplayer.Json;
 import com.pcapplayer.pcap.Filter;
 import com.pcapplayer.pcap.ParsedPcap;
-import com.pcapplayer.pcap.PcapParser;
+import com.pcapplayer.pcap.PcapReader;
 import com.pcapplayer.pcap.PcapSummary;
 import com.pcapplayer.storage.Category;
 import com.pcapplayer.storage.MetadataStore;
@@ -110,7 +110,7 @@ final class RecordRoutes {
         Path temp = tempFile();
         try {
             store.downloadPcapFile(recordId, temp);
-            return PcapParser.parse(temp);
+            return PcapReader.read(temp);
         } finally {
             Files.deleteIfExists(temp);
         }
