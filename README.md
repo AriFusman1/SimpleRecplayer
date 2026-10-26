@@ -5,10 +5,10 @@ to replay, and the player **impersonates the original source**: it sends the sam
 service-under-test, **now**, with **the same time gaps** as in the recording.
 
 - Only sends. It never waits for or reacts to replies.
-- Uses normal Java sockets: only the application payload (the bytes after the TCP/UDP header) is replayed.
+- Uses normal TCP/UDP sockets (Vert.x networking): only the application payload (the bytes after the TCP/UDP header) is replayed.
 - Only one replay at a time in the whole system.
 
-Backend: Java 17 + Vert.x 4.5. Frontend: React + TypeScript + Vite. Storage: S3 (AWS or MinIO).
+Backend: Java 17 + Vert.x 4.5 + Pcap4J 1.8 (libpcap). Frontend: React + TypeScript + Vite. Storage: S3 (AWS or MinIO).
 
 ---
 
@@ -24,7 +24,7 @@ backend/
     Json.java                               the one shared Jackson ObjectMapper
 
     pcap/                                   (1) reading pcap files - pure logic, no network, no S3
-      PcapParser.java                       hand-written classic-pcap parser -> ParsedPcap
+      PcapReader.java                       reads classic pcap files with Pcap4J/libpcap -> ParsedPcap
       Packet.java                           one IPv4 TCP/UDP packet with a payload
       ParsedPcap.java                       all packets of a file + skipped counts + first/last time
       Mode.java                             TCP_SERVER / UDP_SERVER / TCP_CLIENT (+ protocol, filter side)
@@ -34,7 +34,8 @@ backend/
       PcapSummary.java                      summary for the Upload page + validation of a filter
 
     replay/                                 (2) sending over the network with the right timing
-      Player.java                           start / stop / status, the timing loop, TCP & UDP sending
+      Player.java                           start / stop / status; deploys one ReplayVerticle per replay
+      ReplayVerticle.java                   one running replay: Vert.x sockets + timers on its own context
       Replay.java                           one replay: what to send + live progress (atomic fields)
       ReplayState.java                      IDLE / WAITING / PLAYING / FINISHED / STOPPED / FAILED
       ReplayStatus.java                     the snapshot returned to the UI
@@ -78,13 +79,23 @@ Dockerfile                                  multi-stage build: frontend -> backe
 ### Backend (runtime)
 | Library | Version | Why |
 |---|---|---|
-| `io.vertx:vertx-core` | 4.5.10 | HTTP server, event loop, executeBlocking |
+| `io.vertx:vertx-core` | 4.5.10 | HTTP server, event loop, executeBlocking; replay networking (`NetClient`, `NetServer`, `DatagramSocket`) and timers |
 | `io.vertx:vertx-web` | 4.5.10 | Router, body handler, static files |
 | `com.fasterxml.jackson.core:jackson-core` / `jackson-databind` | 2.16.1 | JSON <-> Java objects (same version as Vert.x uses) |
 | `software.amazon.awssdk:s3` | 2.25.60 | S3 client (Netty and Apache HTTP clients **excluded**) |
 | `software.amazon.awssdk:url-connection-client` | 2.25.60 | small JDK-based HTTP client for the S3 SDK |
+| `org.pcap4j:pcap4j-core` | 1.8.2 | opens pcap files through the native libpcap and decodes Ethernet / VLAN / Linux SLL / IPv4 / TCP / UDP |
+| `org.pcap4j:pcap4j-packetfactory-static` | 1.8.2 | Pcap4J's packet decoders, registered statically (no class scanning) |
+| `net.java.dev.jna:jna` | 5.14.0 | how Pcap4J calls libpcap. Pinned above the 5.3.1 that Pcap4J brings, which has no ARM64 (Apple Silicon) support |
 
-Transitive dependencies come from those (Netty via Vert.x; the AWS SDK core modules).
+Transitive dependencies come from those (Netty via Vert.x; the AWS SDK core modules; `slf4j-api` via Pcap4J and the AWS SDK).
+
+### Native library
+Pcap4J needs **libpcap** at runtime (only the library, not the development headers):
+- macOS: built in, nothing to install.
+- Debian/Ubuntu: `apt-get install libpcap0.8`. That package has `libpcap.so.0.8` but not the plain `libpcap.so`, so start
+  Java with `-Dorg.pcap4j.core.pcapLibName=libpcap.so.0.8` (the Docker image does this), or install `libpcap-dev`.
+- Reading files needs no root and no capabilities (only live capture would).
 
 ### Backend (build only)
 Maven 3.9.x, `maven-compiler-plugin` 3.13.0, `maven-shade-plugin` 3.5.3 (builds the fat jar). JDK 17.
@@ -188,11 +199,12 @@ docker run -p 8080:8080 -e S3_ENDPOINT=http://host.docker.internal:9000 pcap-pla
 ```
 
 The Dockerfile has 3 stages: `node` builds the UI, `maven` builds the fat jar (with the UI inside),
-and a small `eclipse-temurin` JRE image runs it.
+and a small `eclipse-temurin` JRE image runs it. The runtime stage installs `libpcap0.8` (for Pcap4J) and passes
+`-Dorg.pcap4j.core.pcapLibName=libpcap.so.0.8` to Java.
 
 OpenShift notes:
 - The image runs as a non-root user and works with **any** user id (OpenShift assigns a random one in group 0).
-  All writes go to `TEMP_DIR` under `/tmp`.
+  All writes go to `TEMP_DIR` under `/tmp`. libpcap is only used to read files, so no extra capabilities are needed.
 - Run **one replica** (`replicas: 1`): the "only one replay at a time" rule and the pending uploads live in memory.
 - Liveness/readiness probe: `GET /health` on port 8080.
 - Set S3 settings with environment variables (secret key from a Secret).
@@ -246,45 +258,32 @@ The optional IP filter is on the same side as the port filter.
 
 ---
 
-## 8. The pcap file format (what the parser reads)
+## 8. Reading pcap files (`PcapReader`)
 
 Classic pcap = one 24-byte **global header**, then for every packet a 16-byte **packet header**
-followed by the captured bytes. See `PcapParser.parse`.
+(timestamp, captured length, original length) followed by the captured bytes.
 
-**Global header** (byte order = the capturing machine's, detected from the magic number):
+**libpcap** (through Pcap4J) reads the file format: byte order, microsecond or nanosecond timestamps.
+`PcapReader.open` asks for nanosecond precision (`Pcaps.openOffline(path, TimestampPrecision.NANO)`) and falls back to
+`Pcaps.openOffline(path)` if the libpcap is too old for that. **Pcap4J** decodes the network headers. `PcapReader` only decides
+what to keep, with these rules:
 
-| Offset | Size | Field | Used for |
-|---|---|---|---|
-| 0 | 4 | magic | `a1b2c3d4` = microseconds, `a1b23c4d` = nanoseconds; read swapped (`d4c3b2a1`, `4d3cb2a1`) = little-endian file. `0a0d0d0a` = pcapng -> rejected |
-| 4 | 2+2 | version | ignored |
-| 8 | 4 | thiszone | ignored |
-| 12 | 4 | sigfigs | ignored |
-| 16 | 4 | snaplen | ignored |
-| 20 | 4 | link type | `1` Ethernet, `113` Linux SLL, `276` Linux SLL2; anything else -> rejected |
-
-**Packet header** (same byte order):
-
-| Offset | Size | Field |
-|---|---|---|
-| 0 | 4 | timestamp seconds |
-| 4 | 4 | timestamp microseconds (or nanoseconds) |
-| 8 | 4 | captured length (bytes stored in the file) |
-| 12 | 4 | original length (bytes on the wire) - if bigger than captured, the packet was **truncated** -> skipped |
-
-**Inside the packet** (always big-endian / network byte order):
-
-- **Ethernet**: dst MAC (6), src MAC (6), EtherType at offset **12**. If EtherType is `0x8100` (802.1Q VLAN),
-  the real EtherType is at offset **16** and IP starts at **18**; otherwise IP starts at **14**.
-- **Linux SLL** (16-byte header): protocol at offset **14**, IP starts at **16**.
-- **Linux SLL2** (20-byte header): protocol at offset **0**, IP starts at **20**.
-- Protocol/EtherType must be `0x0800` (IPv4), otherwise the packet is ignored (IPv6, ARP...).
-- **IPv4**: byte 0 = version (high 4 bits, must be 4) + header length in 32-bit words (low 4 bits);
-  bytes 2-3 total length (used to cut off Ethernet padding); bytes 6-7 flags + fragment offset
-  (`0x2000` = more fragments, low 13 bits = offset; either set -> **fragment** -> skipped);
-  byte 9 protocol (6 TCP, 17 UDP, others ignored); bytes 12-15 source IP; 16-19 destination IP.
-- **TCP**: bytes 0-1 source port, 2-3 destination port, byte 12 high 4 bits = header length in 32-bit words.
-  Payload = after the header, up to the IP total length.
-- **UDP**: bytes 0-1 source port, 2-3 destination port, header is always 8 bytes.
+- **File checks** (`checkMagic`, before libpcap opens it): smaller than 24 bytes -> "too small"; magic `0a0d0d0a` = pcapng
+  -> rejected with the `editcap` hint (libpcap could read pcapng, but we keep supporting classic pcap only);
+  any magic other than `a1b2c3d4` / `a1b23c4d` (or byte-swapped) -> "not a pcap file".
+- **Link type**: `1` Ethernet, `113` Linux SLL, `276` Linux SLL2; anything else -> rejected.
+- Each packet is read with `getNextRawPacketEx()` (the raw bytes, so we know the exact captured length);
+  the timestamp comes from `handle.getTimestamp()` and the original length from `handle.getOriginalLength()`.
+  End of file = `EOFException`. A file cut in the middle of a packet (libpcap error) counts as one truncated packet and ends the read.
+- **Truncated** (captured length < original length, i.e. cut by the snap length) -> counted + skipped.
+- **Finding IPv4** (`findIpv4Start`): Ethernet (with or without 802.1Q VLAN tags) and Linux SLL are decoded by Pcap4J;
+  we add up the header lengths in front of the `IpV4Packet`. **SLL2** isn't known to Pcap4J 1.8.2, so `sll2Ipv4Start`
+  reads its fixed 20-byte header (protocol at offset **0**, IP starts at **20**). Not IPv4 (IPv6, ARP...) -> ignored.
+- **Fragment** (IPv4 "more fragments" flag set, or fragment offset > 0) -> counted + skipped.
+- **TCP / UDP** only (`TcpPacket` / `UdpPacket`), others ignored. Ports and IPs come from Pcap4J's headers.
+- **Payload** = the bytes after the TCP/UDP header, up to the IP total length (cuts off Ethernet padding). It is copied from the
+  original raw bytes, not from Pcap4J's decoded payload: Pcap4J decodes some ports as protocols (DNS on 53, GTP) and rebuilding
+  those can lose trailing bytes.
 - Packets with an empty payload (e.g. pure TCP ACKs) are ignored.
 
 Deliberately **not** handled: IP fragment reassembly, TCP stream reassembly, removing retransmissions/duplicates.
@@ -297,12 +296,13 @@ Each captured packet's payload is sent as-is, in capture order.
 | Thread | What runs there | Rule |
 |---|---|---|
 | **Vert.x event loop** | every route handler, `sendJson`, `sendFile`, timers | must never block |
-| **Vert.x worker** (via `vertx.executeBlocking`) | S3 calls, parsing pcaps, building messages | may block. Jobs are *ordered*: they run one at a time, which keeps metadata changes race-free |
-| **Replay executor** (`Player.executor`, fixed pool of 2) | thread 1: the send loop. Thread 2: TCP only, reads and discards replies | may block/sleep for as long as the replay lasts |
+| **Vert.x worker** (via `vertx.executeBlocking`) | S3 calls, reading pcaps (Pcap4J/libpcap), building messages | may block. Jobs are *ordered*: they run one at a time, which keeps metadata changes race-free |
+| **Replay context** (the event loop of the running `ReplayVerticle`) | connecting / listening, sending, discarding replies, the timers | must never block. Each replay is deployed as a verticle, so Vert.x gives it its own event-loop context |
 
-The replay executor and Vert.x threads share data only through `AtomicReference`, `AtomicBoolean`,
-`AtomicInteger`, `AtomicLong` (in `Player` / `Replay`). Metadata lives in `ConcurrentHashMap`s
-(`MetadataStore`, `UploadRoutes.pending`). No `synchronized`, no `wait/notify`, no `new Thread`.
+The replay context and the HTTP threads share data only through `AtomicReference`, `AtomicBoolean`,
+`AtomicInteger`, `AtomicLong` (in `Player` / `Replay`). Inside `ReplayVerticle` plain fields are enough: Vert.x runs
+all of its code (start, stop, socket handlers, timers) on that one context. Metadata lives in `ConcurrentHashMap`s
+(`MetadataStore`, `UploadRoutes.pending`). No `synchronized`, no `wait/notify`, no `new Thread`, no executors.
 
 Startup (`Main.main`) runs on the main thread: it loads all metadata from S3 *before* the HTTP server starts.
 
@@ -323,11 +323,14 @@ Notation: **file -> function** (input) -> output. *[thread]*.
    `ApiServer.blocking(vertx, ctx, work)`. *[event loop]*
 5. **ApiServer.java -> `blocking(vertx, ctx, work)`** — `vertx.executeBlocking(work)`; on success `sendJson`, on failure `ctx.fail`. *[event loop -> worker]*
 6. Inside the work *[worker]*:
-   - **PcapParser.java -> `parse(Path)`** — reads the file (`Files.readAllBytes`) -> `parse(byte[])`:
-     detects byte order + time unit from the magic, checks the link type, loops over packet headers.
-     For each packet: truncated? -> count + skip. **`findIpv4Start`** (link-layer header -> IPv4 offset or -1).
-     **`isFragment`** -> count + skip. **`parseIpv4`** -> `Packet` or null (not TCP/UDP or empty payload).
-     Returns **`ParsedPcap`** (packets, first/last packet time, total, fragments, truncated).
+   - **PcapReader.java -> `read(Path)`**:
+     **`checkMagic`** (reads the first 24 bytes: too small / pcapng / unknown magic -> error) ->
+     **`open`** (`Pcaps.openOffline(path, NANO)`, fallback `openOffline(path)`) -> checks the link type (`handle.getDlt()`) ->
+     **`readPackets`**: loops `handle.getNextRawPacketEx()` until `EOFException`. For each packet: time = **`toNanos(handle.getTimestamp())`**;
+     truncated (`raw.length < handle.getOriginalLength()`)? -> count + skip. **`findIpv4Start`** (Pcap4J decodes the link layer,
+     or **`sll2Ipv4Start`** for SLL2 -> IPv4 offset or -1) -> `IpV4Packet.newPacket(raw, offset, ...)`; fragment flag/offset -> count + skip.
+     **`toPacket`** -> `Packet` or null (not TCP/UDP or empty payload; payload copied from the raw bytes).
+     Returns **`ParsedPcap`** (packets, first/last packet time, total, fragments, truncated). The libpcap handle is closed (try-with-resources).
      A bad file throws `IllegalArgumentException` -> the temp file is deleted -> HTTP 400 popup.
    - Saves `PendingUpload(file, fileName, size, parsed, createdAt)` in the `pending` `ConcurrentHashMap` under a new `uploadId`.
    - **PcapSummary.java -> `summarize(ParsedPcap)`** -> `Summary` (recording start/end, packet counts, protocols,
@@ -374,45 +377,55 @@ Unsaved uploads are dropped after 1 hour: **UploadRoutes -> `removeOldPendingUpl
    - `player.status().state().isDone()` — fail fast (409) if a replay is running, before downloading anything;
    - `store.record(id)`, `store.category(...)`, **`Validation.port`**, target host required unless TCP client;
    - **RecordRoutes.java -> `loadParsed(recordId)`** — **`MetadataStore.downloadPcapFile`** -> **`S3Storage.downloadToFile`**
-     (streams `pcaps/{id}.pcap` into a temp file) -> **`PcapParser.parse`** -> deletes the temp file -> `ParsedPcap`;
+     (streams `pcaps/{id}.pcap` into a temp file) -> **`PcapReader.read`** -> deletes the temp file -> `ParsedPcap`;
    - **`RecordRoutes.filterFor(record, category, start, end)`** -> `Filter`;
    - **`MessageBuilder.build`** -> `List<Message>` (ordered, `offsetMillis` from the range start);
    - **Player.java -> `start(recordId, name, mode, host, port, rangeStart, messages)`**:
      reads `current`; if that replay isn't done -> `IllegalStateException` (409). Creates a **`Replay`**
      (state `WAITING` for TCP client, else `PLAYING`), then `current.compareAndSet(previous, replay)` —
-     the atomic "only one replay" guard — and `executor.submit(() -> run(replay))`. Returns immediately;
+     the atomic "only one replay" guard — and `vertx.deployVerticle(new ReplayVerticle(replay))`. Returns immediately.
+     When the deployment completes *[HTTP event loop]* the deployment id is stored in `replay.deploymentId`
+     (if Stop was pressed in the meantime, it undeploys right away);
    - returns `player.status()` -> JSON. **App.tsx** `setReplay(status)` shows the bar at once.
-4. **Player.java -> `run(replay)`** *[replay executor, thread 1]* — picks by mode:
-   - **`playAsTcpClient`** (TCP server mode): new `Socket`, registers it in `replay.openSocket` (so Stop can close it),
-     `setTcpNoDelay(true)`, `connect(host:port, 5 s timeout)`, then **`sendOverTcp`**.
-   - **`playAsTcpServer`** (TCP client mode): `ServerSocket` bound to the port, state stays `WAITING`,
-     `accept()` blocks until the service connects; the listening socket is then closed (only one connection),
-     state -> `PLAYING`, **`sendOverTcp`**.
-   - **`playAsUdpSender`** (UDP server mode): `DatagramSocket`; each payload is one `DatagramPacket` to host:port.
-   - **`sendOverTcp`** — submits **`discardReplies(in)`** to the executor *[replay executor, thread 2]*: reads and ignores
-     everything until the socket closes, so replies can't fill the buffers. Then one `out.write(payload)` + `flush()` per message.
-   - **`sendWithTiming(replay, sender)`** — the timing loop: `start = System.nanoTime()` (stored in `replay.startNanos`);
-     for each message `due = start + offsetMillis`; sleeps in steps of at most 100 ms until `due` (checking
-     `stopRequested` each step); sends; `replay.sent.incrementAndGet()`. Always measured from the same `start`, so there is no drift.
-   - End: `replay.finish(FINISHED)`; on an exception `finish(FAILED, message)` (e.g. "Connection refused",
-     "Connection reset"), or `STOPPED` if Stop was requested. The socket is always closed in `finally`.
+4. **ReplayVerticle.java** *[replay context: the verticle's own event loop, for everything below]*:
+   - **`start()`** — picks by mode:
+     - **`connectToService`** (TCP server mode): `vertx.createNetClient` (`TCP_NODELAY` on, 5 s connect timeout) ->
+       `client.connect(port, host)` -> **`onConnected`**. A connect error -> `FAILED` (e.g. "Connection refused").
+     - **`waitForService`** (TCP client mode): `vertx.createNetServer` (`TCP_NODELAY` on) -> `listen(port)`; state stays `WAITING`.
+       The `connectHandler` takes the first connection -> **`onConnected`**; any later connection is closed at once (only one allowed).
+       The server stays open until the replay ends, because closing a Vert.x server also closes its connections.
+       Listen error (e.g. "Address already in use") -> `FAILED`.
+     - **`sendUdp`** (UDP server mode): `vertx.createDatagramSocket()`; each payload is one `udp.send(buffer, port, host)` ->
+       **`startTiming`**.
+   - **`onConnected(socket)`** (both TCP modes) — `socket.handler(...)` reads and ignores the replies (so they can't fill the buffers);
+     `exceptionHandler` -> `FAILED` (e.g. "Connection reset"); `closeHandler` -> `FAILED` "Connection closed by the service";
+     state -> `PLAYING`; **`startTiming`**.
+   - **`startTiming`** — `startNanos = System.nanoTime()` (also stored in `replay.startNanos` for the status), then **`sendDueMessages`**.
+   - **`sendDueMessages`** — the timing: for the next message, `delay = (start + offsetMillis - now)` in ms. If `delay > 0`, sets
+     **one** `vertx.setTimer(delay, ...)` that calls `sendDueMessages` again, and returns. Otherwise sends it (one `socket.write` or
+     one datagram per message), `replay.sent.incrementAndGet()`, and goes on with the next one. Always measured from the same start,
+     so there is no drift. If the TCP write queue is full it waits for the `drainHandler` (like a blocking write would).
+     After the last message -> **`end(FINISHED)`**. A failed write/send -> `end(FAILED, message)`.
+   - **`end(state, error)`** -> **`finish`** (cancels the pending timer, closes socket / server / client / UDP socket,
+     `replay.finish(state, error)` sets the end time, error and final state) -> `vertx.undeploy(deploymentID())`.
 5. **Status polling** — **App.tsx** `setInterval` every 1 s -> **`api.replayStatus()`** -> `GET /api/replay/status` ->
-   **ReplayRoutes.java -> `status`** -> **Player.java -> `status()`** -> **Replay.java -> `toStatus()`** *[event loop; only reads atomic fields]*:
+   **ReplayRoutes.java -> `status`** -> **Player.java -> `status()`** -> **Replay.java -> `toStatus()`** *[HTTP event loop; only reads atomic fields]*:
    elapsed = now (or end) - start; remaining = last message offset - elapsed; recording clock = range start + elapsed.
    **NowPlaying.tsx** renders name, target, state ("Waiting for connection on port X"), progress bar
    (elapsed / (elapsed + remaining)), elapsed/remaining, recording clock, messages sent/total, Stop button,
    and the error when `FAILED`. After the replay ends the bar shows the final state until you press Close.
 6. **Stop** — **NowPlaying.tsx** Stop -> **App.tsx -> `stopReplay()`** -> `POST /api/replay/stop` ->
-   **ReplayRoutes.java -> `stop`** -> **Player.java -> `stop()`** *[event loop]*: sets `replay.stopRequested = true` and closes
-   `replay.openSocket` (this wakes up a blocked `accept()` or `write()`). The send loop notices within 100 ms
-   and the replay ends as `STOPPED`.
+   **ReplayRoutes.java -> `stop`** -> **Player.java -> `stop()`** *[HTTP event loop]*: sets `replay.stopRequested = true` and
+   `vertx.undeploy(deploymentId)`. Vert.x then calls **ReplayVerticle -> `stop()`** *[replay context]* -> **`finish(STOPPED)`**:
+   the pending timer is cancelled and the sockets are closed, so the replay ends as `STOPPED` right away
+   (also while `WAITING` for a connection).
 
 ### 10.3 Edit
 
 1. **RecordCard.tsx** Edit -> **RecordDialogs.tsx -> `EditDialog`** — name, description, start, end (text in `DD/MM/YYYY HH:MM:SS`).
 2. **`save()`** -> `parseTime` both times -> **`api.updateRecord`** -> `PUT /api/records/{id}`.
 3. **RecordRoutes.java -> `update(ctx)`** *[worker]*: `Validation.recordName(store, name, id)` (unique, except itself).
-   If the time range changed: **`loadParsed`** (download + parse) -> **`PcapSummary.validate`** with the record's filter and the new
+   If the time range changed: **`loadParsed`** (download + `PcapReader.read`) -> **`PcapSummary.validate`** with the record's filter and the new
    range (time inside the recording, messages > 0) -> new `Stats`. Builds the updated `PcapRecord` ->
    **`MetadataStore.saveRecord`** (S3 `records/{id}.json` + map). Returns it; the UI reloads.
 
@@ -484,4 +497,5 @@ call `showError` -> **App.tsx** shows the Error modal.
   (`-XX:MaxRAMPercentage=75` is set in the image).
 - Blocking jobs run one at a time (ordered `executeBlocking`), so a big upload delays other changes for a moment.
 - Pending uploads, the replay status and the "one replay" rule are in memory: run a single replica.
-- Timing precision is about 1 ms.
+- Timing precision is about 1 ms (Vert.x timers have millisecond resolution).
+- libpcap must be installed where the jar runs (see section 2, "Native library").

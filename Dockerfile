@@ -23,6 +23,12 @@ FROM eclipse-temurin:17.0.12_7-jre
 WORKDIR /app
 COPY --from=backend /build/backend/target/pcap-player-simple.jar /app/app.jar
 
+# Pcap4J reads pcap files through the native libpcap. Only the runtime library is needed:
+# reading files needs no root and no capabilities, so the app still runs as any non-root user.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpcap0.8 \
+    && rm -rf /var/lib/apt/lists/*
+
 # OpenShift runs the container with a random user id that belongs to group 0 (root group).
 # Giving group 0 the same rights as the owner makes /app usable for that user.
 # Temp files (uploads, Vert.x cache) go to /tmp, which every user can write.
@@ -32,4 +38,6 @@ USER 1001
 ENV HTTP_PORT=8080 \
     TEMP_DIR=/tmp/pcap-player
 EXPOSE 8080
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/app.jar"]
+# libpcap0.8 installs libpcap.so.0.8 but not the plain libpcap.so name (that is in the -dev package),
+# so we tell Pcap4J the exact file name.
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-Dorg.pcap4j.core.pcapLibName=libpcap.so.0.8", "-jar", "/app/app.jar"]
